@@ -3,8 +3,12 @@
 #include <ChainableLED.h>
 #include <Wire.h>
 #include "rgb_lcd.h"
+#include <ArduinoJson.h>
 
 //#define DEBUG
+
+StaticJsonBuffer<200> jsonBuffer;
+JsonObject& root = jsonBuffer.createObject();
 
 // Devices
 #define NUM_STATUS_LEDS  2
@@ -70,15 +74,11 @@ int m_currentLCDState = s_lcdState;
 bool m_buttonOn = false;
 bool m_fuelWarningOn = false;
 
-#ifdef DEBUG
 unsigned long m_lastSerialPrint;
-#endif
 
 void setup() {
   // Configure the serial communication line at 9600 baud (bits per second.)
-  #ifdef DEBUG
-  Serial.begin(9600);
-  #endif
+  Serial.begin(57600);
   
   // Configure the angle sensor's pin for input.
   pinMode(enginePowerMeter, INPUT);
@@ -173,15 +173,18 @@ void displayStatus() {
     }
   }
   
-  #ifdef DEBUG
   unsigned long currentTime = millis();
   if(currentTime > m_lastSerialPrint + 1000)
   {
+    root["ep"] = m_enginePower;
+    root.printTo(Serial);
+    
+    #ifdef DEBUG
     Serial.println(m_enginePower);
     Serial.println(s_lcdState);
+    #endif
     m_lastSerialPrint = millis();
   }
-  #endif
 }
 
 void displayWarning() {
