@@ -4,6 +4,7 @@
 #include <Wire.h>
 #include "rgb_lcd.h"
 #include <ArduinoJson.h>
+#include <AnimatedCircularLED.h>
 
 //#define DEBUG
 
@@ -18,16 +19,15 @@
 // Devices
 #define NUM_STATUS_LEDS  2
 ChainableLED status_leds(6, 7, NUM_STATUS_LEDS);
-
 rgb_lcd lcd;
 Grove_LED_Bar bar(9, 8, 0); // Clock pin, Data pin, Orientation
 CircularLED circularLED1(8,7);
-const int buttonPin = 3;
-const int speakerPin = 4;
+AnimatedCircularLED animatedCircularLED;
+
+const byte buttonPin = 3;
 const int enginePowerMeter = A0;
 
 // CONSTANTS
-const int ALARM_TONE = 1915;
 const float FLASH_DURATION = 1000;
 
 // What are the chances of something malfunctioning
@@ -51,16 +51,11 @@ bool m_isFueling = false;
 bool m_isRepairing = false;
 
 float m_enginePower = 1.0f; // Efects fuel level, malfunction chance
-int m_numAstronauts = 0; // Effects O2 production
+byte m_numAstronauts = 0; // Effects O2 production
 
-unsigned int ENGINE_POWER_LED[24];
-unsigned int m_currentEnginePowerLed;
-unsigned long m_lastEnginePowerDisplayTime;
-
-unsigned long m_lastBuzzerTime;
 unsigned long m_flashWarnTime;
+unsigned long m_lastWarnTime;
 bool m_isFlashWarnOn;
-bool m_isBuzzerOn;
 
 enum LCDState {
   LCD_INIT = -1,
@@ -73,7 +68,7 @@ enum LCDState {
 };
 
 LCDState s_lcdState = LCD_INIT;
-int m_currentLCDState = s_lcdState;
+byte m_currentLCDState = s_lcdState;
 
 bool m_buttonOn = false;
 bool m_warningOn = false;
@@ -87,7 +82,6 @@ void setup() {
   
   // Configure the angle sensor's pin for input.
   pinMode(enginePowerMeter, INPUT);
-  pinMode(speakerPin, OUTPUT);
   pinMode(buttonPin, INPUT);
   
   bar.begin();
@@ -98,23 +92,13 @@ void setup() {
   lcd.setRGB(0, 0, 255);
 
   toggleLCDState();
-
-  circularLED1.CircularLEDWrite(ENGINE_POWER_LED);
   SetStatusRGB(0,0,0);
-}
-
-void SetStatusRGB(int r, int g, int b) {
-  for(int i=0; i < NUM_STATUS_LEDS; i++) {
-    status_leds.setColorRGB(i, r, g, b);
-  }
-  // status_leds.ChainableRGBLEDWrite(statusLEDPinClk, statusLEDPinDta, NUM_STATUS_LEDS, 255, 0, 0);
 }
 
 void loop() {
   readInput();
   readSerial();
   
-  // put your main code here, to run repeatedly:
   simulateAux();
   simulateFuel();
   simulateOxygen();
@@ -122,6 +106,8 @@ void loop() {
   displayEngineLed();
   displayWarning();
   displayStatus();
+
+  updateServer();
 }
 
 void readSerial() {
@@ -225,25 +211,9 @@ void displayStatus() {
         break;
     }
   }
-  
-  unsigned long currentTime = millis();
-  if(currentTime > m_lastSerialPrint + 1000)
-  {
-    StaticJsonBuffer<200> jsonBuffer;
-    JsonObject& root = jsonBuffer.createObject();
-    root["ep"] = m_enginePower;
-    root.printTo(Serial);
-    
-    #ifdef DEBUG
-    Serial.println(m_enginePower);
-    Serial.println(s_lcdState);
-    #endif
-    m_lastSerialPrint = millis();
-  }
 }
 
 void displayWarning() {
-
   // Check fuel, buzz if engine power up and fuel low
   if (m_warningFlags > 0) {
     if (!m_warningOn) {
@@ -259,97 +229,32 @@ void displayWarning() {
 
     // TODO: Flash warning LED and buzzer
     unsigned long currentTime = millis();
-    unsigned long delta = currentTime - m_lastBuzzerTime;
+    unsigned long delta = currentTime - m_lastWarnTime;
     m_flashWarnTime += delta;
     if (m_isFlashWarnOn && m_flashWarnTime < FLASH_DURATION) {
-      playBuzzer();
+      // Process something while flash warn on
     } else if (!m_isFlashWarnOn && m_flashWarnTime < FLASH_DURATION){
-      // Process Something while flash warn off
+      // Process something while flash warn off
     } else {
       m_isFlashWarnOn = !m_isFlashWarnOn;
       m_flashWarnTime = 0;
       if (m_isFlashWarnOn) {
         SetStatusRGB(255,0,0);
       } else {
-        digitalWrite(speakerPin, LOW);
-        m_isBuzzerOn = false;
         SetStatusRGB(0,0,0);
       }
     }
-    m_lastBuzzerTime = currentTime;
+    m_lastWarnTime = currentTime;
     m_warningOn = true;
   } else if (m_warningOn) {
     m_warningOn = false;
-    digitalWrite(speakerPin, LOW);
     lcd.setRGB(0, 0, 255);
     SetStatusRGB(0,0,0);
   }
 }
 
-void playBuzzer() {
-  if (micros() % 2 == 0) {
-      if (!m_isBuzzerOn) 
-      {
-        digitalWrite(speakerPin, HIGH);
-        m_isBuzzerOn = true;
-      } else if (m_isBuzzerOn) {
-        digitalWrite(speakerPin, LOW);
-        m_isBuzzerOn = false;
-      }
-    }
-}
-
 void displayEngineLed() {
-  // Read engine status and display engine power led
-  unsigned int enginePower = (int)(24 * m_enginePower);
-  unsigned long currentTime = millis();
-  if (m_currentEnginePowerLed != enginePower && currentTime > m_lastEnginePowerDisplayTime + 50) {
-    if (enginePower > m_currentEnginePowerLed) {
-      for (int i=0;i<24;i++)
-      {
-        unsigned int ledOnOff = (i < enginePower) ? 0xff : 0;
-        if (ENGINE_POWER_LED[i] != ledOnOff) {
-          ENGINE_POWER_LED[i] = ledOnOff;
-          m_currentEnginePowerLed = i;
-          break;
-        }
-      }
-    } else {
-      for (int i=23;i>=0;i--)
-      {
-        unsigned int ledOnOff = (i < enginePower) ? 0xff : 0;
-        if (ENGINE_POWER_LED[i] != ledOnOff) {
-          ENGINE_POWER_LED[i] = ledOnOff;
-          m_currentEnginePowerLed = i;
-          break;
-        }
-      }
-    }
-    
-    circularLED1.CircularLEDWrite(ENGINE_POWER_LED);
-    m_lastEnginePowerDisplayTime = currentTime;
-  }
-}
-
-void playTone(int tone, int duration) {
-    for (long i = 0; i < duration * 1000L; i += tone * 2) {
-        digitalWrite(speakerPin, HIGH);
-        delayMicroseconds(tone);
-        digitalWrite(speakerPin, LOW);
-        delayMicroseconds(tone);
-    }
-}
-
-void playNote(char note, int duration) {
-    char names[] = { 'c', 'd', 'e', 'f', 'g', 'a', 'b', 'C' };
-    int tones[] = { 1915, 1700, 1519, 1432, 1275, 1136, 1014, 956 };
-
-    // play the tone corresponding to the note name
-    for (int i = 0; i < 8; i++) {
-        if (names[i] == note) {
-            playTone(tones[i], duration);
-        }
-    }
+  animatedCircularLED.setPercentage(m_enginePower);
 }
 
 void toggleLCDState () {
@@ -368,3 +273,25 @@ void toggleLCDState () {
   }
 }
 
+void updateServer() {
+  unsigned long currentTime = millis();
+  if(currentTime > m_lastSerialPrint + 1000)
+  {
+    StaticJsonBuffer<200> jsonBuffer;
+    JsonObject& root = jsonBuffer.createObject();
+    root["ep"] = m_enginePower;
+    root.printTo(Serial);
+    
+    #ifdef DEBUG
+    Serial.println(m_enginePower);
+    Serial.println(s_lcdState);
+    #endif
+    m_lastSerialPrint = millis();
+  }
+}
+
+void SetStatusRGB(int r, int g, int b) {
+  for(int i=0; i < NUM_STATUS_LEDS; i++) {
+    status_leds.setColorRGB(i, r, g, b);
+  }
+}
