@@ -6,15 +6,16 @@
 #include <ArduinoJson.h>
 #include <AnimatedCircularLED.h>
 
-//#define DEBUG
+#define DEBUG
 
 #define HULL_DAMAGE (0x1)
-#define AIR_LEAK (0x2)
+#define CABIN_PRESSURE (0x2)
 #define OXYGEN_LOW (0x4)
 #define FUEL_LOW (0x8)
-#define ENGINE_FAILURE (0x16)
+#define ENGINE_MALFUNCTION (0x16)
 #define FUSE (0x32)
 #define COLLISION (0x64)
+#define FUEL_LINE (0x128)
 
 // Devices
 #define NUM_STATUS_LEDS  2
@@ -29,11 +30,6 @@ const int enginePowerMeter = A0;
 
 // CONSTANTS
 const float FLASH_DURATION = 1000;
-
-// What are the chances of something malfunctioning
-// Will be multiplied by engine power
-const float CHANCE_MALFUNCTION = 0.1f;
-const float CHANCE_REPAIR = 0.1f;
 
 #ifdef DEBUG
 const float FUEL_BURN_RATE = 0.001;
@@ -50,7 +46,8 @@ bool m_powerOn = false;
 bool m_isFueling = false;
 bool m_isRepairing = false;
 
-float m_enginePower = 1.0f; // Efects fuel level, malfunction chance
+float m_enginePowerInput = 0.0f; // Efects fuel level, malfunction chance
+float m_enginePower = 0.0f; // Efects fuel level, malfunction chance
 byte m_numAstronauts = 0; // Effects O2 production
 
 unsigned long m_flashWarnTime;
@@ -72,9 +69,9 @@ byte m_currentLCDState = s_lcdState;
 
 bool m_buttonOn = false;
 bool m_warningOn = false;
-int m_warningFlags;
+byte m_warningFlags;
 unsigned long m_lastSerialPrint;
-String m_inputString = String("");
+String m_inputString = "";
 
 void setup() {
   // Configure the serial communication line at 9600 baud (bits per second.)
@@ -99,11 +96,6 @@ void loop() {
   readInput();
   readSerial();
   
-  simulateAux();
-  simulateFuel();
-  simulateOxygen();
-
-  displayEngineLed();
   displayWarning();
   displayStatus();
 
@@ -115,10 +107,9 @@ void readSerial() {
     int inChar = Serial.read();
     m_inputString += (char)inChar;
      
-    if (inChar == '\n') {
+    if (inChar == '\0') {
       //Serial.println(m_inputString);
       if (m_inputString.startsWith("reset")) {
-         reset();
          toggleLCDState();
       } else {
         StaticJsonBuffer<200> jsonReadBuffer;
@@ -129,28 +120,36 @@ void readSerial() {
           long        time      = root["time"];
           double      latitude  = root["data"][0];
           double      longitude = root["data"][1];
-          if (jsonInput.containsKey("reset"))
-          {
-           
-          }
           */
-          jsonInput.printTo(Serial);
+          if (jsonInput.containsKey("ep"))
+          {
+            m_enginePower = jsonInput["ep"];
+          }
+          
+          if (jsonInput.containsKey("wf"))
+          {
+            m_warningFlags = jsonInput["wf"];
+          }
+
+          if (jsonInput.containsKey("fl"))
+          {
+            m_fuel = jsonInput["fl"];
+          }
+          
+          // jsonInput.printTo(Serial);
         }
       }
-      m_inputString = String("");
+      m_inputString = "";
     }
   }
 }
 
 void readInput() {
-  if (m_fuel > 0) {
-    int value = analogRead(enginePowerMeter);
-    m_enginePower = (float) value / 1023;
-    if (m_enginePower >= 0.995f) m_enginePower = 1;
-  } else {
-    m_enginePower = 0;
-  }
-
+  // Read engine power level
+  int value = analogRead(enginePowerMeter);
+  m_enginePowerInput = (float) value / 1023;
+  if (m_enginePowerInput >= 0.995f) m_enginePowerInput = 1;
+  
   handleButton();
 }
 
@@ -159,37 +158,10 @@ void handleButton() {
   if (buttonDown && !m_buttonOn)
   {
     m_buttonOn = true;
-    reset();
     toggleLCDState();
   } else if (!buttonDown) {
     m_buttonOn = false;
   }
-}
-
-void reset() {
-  m_fuel = 1;
-  m_enginePower = 0;
-  s_lcdState = LCD_INIT;
-  m_currentLCDState = s_lcdState;
-}
-
-void simulateAux() {
-  
-}
-
-void simulateFuel() {
-  m_fuel = m_fuel - (m_enginePower * FUEL_BURN_RATE);
-  bar.setLevel(int(10 * m_fuel));
-
-  if (m_fuel < 0.1f) {
-     m_warningFlags |= FUEL_LOW;
-  } else {
-    m_warningFlags &= ~FUEL_LOW;
-  }
-}
-
-void simulateOxygen() {
-  
 }
 
 void displayStatus() {
@@ -211,6 +183,9 @@ void displayStatus() {
         break;
     }
   }
+  
+  bar.setLevel(int(10 * m_fuel));
+  animatedCircularLED.setPercentage(m_enginePower);
 }
 
 void displayWarning() {
@@ -253,10 +228,6 @@ void displayWarning() {
   }
 }
 
-void displayEngineLed() {
-  animatedCircularLED.setPercentage(m_enginePower);
-}
-
 void toggleLCDState () {
   m_currentLCDState++;
   if (m_currentLCDState >= LCD_NUM_STATES) m_currentLCDState = LCD_FUEL;
@@ -275,17 +246,12 @@ void toggleLCDState () {
 
 void updateServer() {
   unsigned long currentTime = millis();
-  if(currentTime > m_lastSerialPrint + 1000)
+  if(currentTime > m_lastSerialPrint + 100)
   {
     StaticJsonBuffer<200> jsonBuffer;
     JsonObject& root = jsonBuffer.createObject();
-    root["ep"] = m_enginePower;
+    root["epi"] = m_enginePowerInput;
     root.printTo(Serial);
-    
-    #ifdef DEBUG
-    Serial.println(m_enginePower);
-    Serial.println(s_lcdState);
-    #endif
     m_lastSerialPrint = millis();
   }
 }
