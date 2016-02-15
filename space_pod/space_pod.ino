@@ -5,6 +5,7 @@
 #include "rgb_lcd.h"
 #include <ArduinoJson.h>
 #include <AnimatedCircularLED.h>
+#include <math.h>
 
 #define DEBUG
 
@@ -21,46 +22,43 @@
 #define NUM_STATUS_LEDS  2
 ChainableLED status_leds(6, 7, NUM_STATUS_LEDS);
 rgb_lcd lcd;
-Grove_LED_Bar bar(9, 8, 0); // Clock pin, Data pin, Orientation
-CircularLED circularLED1(8,7);
-AnimatedCircularLED animatedCircularLED;
-
-const byte buttonPin = 3;
-const int enginePowerMeter = A0;
+Grove_LED_Bar fuel_bar(3, 2, 0); // Clock pin, Data pin, Orientation
+Grove_LED_Bar aux_bar(4, 3, 0);
+CircularLED circularLED(8, 7);
+AnimatedCircularLED animatedCircularLED(&circularLED);
+const byte PIR_MOTION_SENSOR = 5;
+const byte BUTTON = 8;
+const int ENGINE_POWER_INPUT = A0;
 
 // CONSTANTS
 const float FLASH_DURATION = 1000;
 
-#ifdef DEBUG
-const float FUEL_BURN_RATE = 0.001;
-#else
-const float FUEL_BURN_RATE = 0.0001;
-#endif
-
 // Resources
-float m_auxPower = 1.0f;
+float m_auxLevel = 1.0f;
 float m_fuel = 1.0f;
-float m_oxygen = 1.0f;
-
-bool m_powerOn = false;
+unsigned short m_chargeRate = 100;
+unsigned short m_drainRate = 100;
+byte m_oxygen = 0;
+byte m_cabinPressure = 0;
+ 
+bool m_powerOn = true;
 bool m_isFueling = false;
 bool m_isRepairing = false;
 
 float m_enginePowerInput = 0.0f; // Efects fuel level, malfunction chance
 float m_enginePower = 0.0f; // Efects fuel level, malfunction chance
-byte m_numAstronauts = 0; // Effects O2 production
 
 unsigned long m_flashWarnTime;
 unsigned long m_lastWarnTime;
 bool m_isFlashWarnOn;
+byte m_warningField;
+bool m_warningOn = false;
 
 enum LCDState {
   LCD_INIT = -1,
-  LCD_FUEL,
-  LCD_ENGINE,
-  LCD_OXYGEN,
-  LCD_AUX,
-  LCD_HULL,
+  LCD_ENGINE_FUEL,
+  LCD_CHARGE_AUX,
+  LCD_PRESSURE_OXYGEN,
   LCD_NUM_STATES
 };
 
@@ -68,38 +66,48 @@ LCDState s_lcdState = LCD_INIT;
 byte m_currentLCDState = s_lcdState;
 
 bool m_buttonOn = false;
-bool m_warningOn = false;
-byte m_warningFlags;
 unsigned long m_lastSerialPrint;
 String m_inputString = "";
+
+unsigned long m_lastPeopleActivity;
 
 void setup() {
   // Configure the serial communication line at 9600 baud (bits per second.)
   Serial.begin(9600);
   
   // Configure the angle sensor's pin for input.
-  pinMode(enginePowerMeter, INPUT);
-  pinMode(buttonPin, INPUT);
+  pinMode(PIR_MOTION_SENSOR, INPUT);
+  pinMode(ENGINE_POWER_INPUT, INPUT);
+  pinMode(BUTTON, INPUT);
   
-  bar.begin();
-
+  fuel_bar.begin();
+  aux_bar.begin();
+  
   // set up the LCD's number of columns and rows:
   lcd.begin(16, 2);
+  animatedCircularLED.setAnimationStepTime(100);
   
-  lcd.setRGB(0, 0, 255);
-
   toggleLCDState();
-  SetStatusRGB(0,0,0);
+  setDefaultState();
+}
+
+void setDefaultState() {
+  lcd.setRGB(0, 0, 255);
+  SetStatusRGB(0, 255, 0);
 }
 
 void loop() {
-  readInput();
-  readSerial();
+  isPeopleDetected();
   
-  displayWarning();
-  displayStatus();
-
-  updateServer();
+  if (m_powerOn) {
+    readInput();
+    readSerial();
+    
+    displayWarning();
+    displayStatus();
+    
+    updateServer();
+  }
 }
 
 void readSerial() {
@@ -121,22 +129,12 @@ void readSerial() {
           double      latitude  = root["data"][0];
           double      longitude = root["data"][1];
           */
-          if (jsonInput.containsKey("ep"))
-          {
-            m_enginePower = jsonInput["ep"];
-          }
-          
-          if (jsonInput.containsKey("wf"))
-          {
-            m_warningFlags = jsonInput["wf"];
-          }
-
-          if (jsonInput.containsKey("fl"))
-          {
-            m_fuel = jsonInput["fl"];
-          }
-          
-          // jsonInput.printTo(Serial);
+          if (jsonInput.containsKey("ep")) { m_enginePower = jsonInput["ep"]; }
+          if (jsonInput.containsKey("wf")) { m_warningField = jsonInput["wf"]; }
+          if (jsonInput.containsKey("fl")) { m_fuel = jsonInput["fl"]; }
+          if (jsonInput.containsKey("al")) { m_auxLevel = jsonInput["al"]; }
+          if (jsonInput.containsKey("cr")) { m_chargeRate = jsonInput["cr"]; }
+          if (jsonInput.containsKey("dr")) { m_drainRate = jsonInput["dr"]; }
         }
       }
       m_inputString = "";
@@ -146,15 +144,12 @@ void readSerial() {
 
 void readInput() {
   // Read engine power level
-  int value = analogRead(enginePowerMeter);
+  int value = analogRead(ENGINE_POWER_INPUT);
   m_enginePowerInput = (float) value / 1023;
   if (m_enginePowerInput >= 0.995f) m_enginePowerInput = 1;
-  
-  handleButton();
-}
 
-void handleButton() {
-  bool buttonDown = digitalRead(buttonPin);
+  // Read Button
+  bool buttonDown = digitalRead(BUTTON);
   if (buttonDown && !m_buttonOn)
   {
     m_buttonOn = true;
@@ -169,7 +164,7 @@ void displayStatus() {
     String stringOne;
     String stringTwo;
     switch(s_lcdState) {
-      case LCD_FUEL:
+      case LCD_ENGINE_FUEL:
         stringOne = String("ENGINE: ");
         stringTwo = String("FUEL: ");
         stringOne += (int)(m_enginePower * 100);
@@ -181,28 +176,51 @@ void displayStatus() {
         lcd.setCursor(0, 1);
         lcd.print(stringTwo);
         break;
+      case LCD_CHARGE_AUX:
+        stringOne = String("CHARGE: ");
+        stringTwo = String("DRAIN: ");
+        stringOne += m_chargeRate;
+        stringTwo += m_drainRate;
+        stringOne += "W  ";
+        stringTwo += "W  ";
+        lcd.setCursor(0, 0);
+        lcd.print(stringOne);
+        lcd.setCursor(0, 1);
+        lcd.print(stringTwo);
+        break;
+      case LCD_PRESSURE_OXYGEN:
+        break;
     }
   }
   
-  bar.setLevel(int(10 * m_fuel));
+  setBarLevel(&fuel_bar, m_fuel);
+  setBarLevel(&aux_bar, m_auxLevel);
+  
+  // Engine Power
   animatedCircularLED.setPercentage(m_enginePower);
+}
+
+void setBarLevel(Grove_LED_Bar* bar, float percent)
+{
+  int barLevel = round(10 * percent);
+  if (barLevel < 1) { barLevel = 1; }
+  bar->setLevel(barLevel);
 }
 
 void displayWarning() {
   // Check fuel, buzz if engine power up and fuel low
-  if (m_warningFlags > 0) {
+  if (m_warningField > 0) {
     if (!m_warningOn) {
-        lcd.clear();
-        lcd.setRGB(255, 0, 0);
-        String stringOne = String("WARNING!");
-        lcd.setCursor(0, 0);
-        lcd.print(stringOne);
-        lcd.setCursor(0, 1);
-        // TODO: Figure out which warning string to display
-        //lcd.print(stringTwo);
-      }
+      lcd.clear();
+      lcd.setRGB(255, 0, 0);
+      String stringOne = "WARNING!";
+      lcd.setCursor(0, 0);
+      lcd.print(stringOne);
+      lcd.setCursor(0, 1);
+      lcd.print(getWarningString(m_warningField));
+    }
 
-    // TODO: Flash warning LED and buzzer
+    // Flash warning LEDs
     unsigned long currentTime = millis();
     unsigned long delta = currentTime - m_lastWarnTime;
     m_flashWarnTime += delta;
@@ -223,19 +241,33 @@ void displayWarning() {
     m_warningOn = true;
   } else if (m_warningOn) {
     m_warningOn = false;
-    lcd.setRGB(0, 0, 255);
-    SetStatusRGB(0,0,0);
+    setDefaultState();
+  }
+}
+
+String getWarningString(byte bitField) {
+  String warningString = "";
+  checkAndAppend(bitField, FUEL_LOW, "Fuel Low", &warningString);
+  checkAndAppend(bitField, FUEL_LINE, "Fuel Line", &warningString);
+  return warningString;
+}
+
+void checkAndAppend(byte bitField, byte flag, String warning, String* message) {
+  if (bitField & flag) {
+    if (message->length() > 0) message->concat(" | ");
+    message->concat(warning);
   }
 }
 
 void toggleLCDState () {
   m_currentLCDState++;
-  if (m_currentLCDState >= LCD_NUM_STATES) m_currentLCDState = LCD_FUEL;
+  if (m_currentLCDState >= LCD_NUM_STATES) m_currentLCDState = LCD_ENGINE_FUEL;
   s_lcdState = (LCDState)m_currentLCDState;
   lcd.clear();
   switch(s_lcdState) {
-    case LCD_FUEL:
-      //
+    case LCD_ENGINE_FUEL:
+    case LCD_CHARGE_AUX:
+    case LCD_PRESSURE_OXYGEN:
       break;
    default:
       lcd.setCursor(0, 0);
@@ -246,8 +278,7 @@ void toggleLCDState () {
 
 void updateServer() {
   unsigned long currentTime = millis();
-  if(currentTime > m_lastSerialPrint + 100)
-  {
+  if(currentTime > m_lastSerialPrint + 100) {
     StaticJsonBuffer<200> jsonBuffer;
     JsonObject& root = jsonBuffer.createObject();
     root["epi"] = m_enginePowerInput;
@@ -259,5 +290,32 @@ void updateServer() {
 void SetStatusRGB(int r, int g, int b) {
   for(int i=0; i < NUM_STATUS_LEDS; i++) {
     status_leds.setColorRGB(i, r, g, b);
+  }
+}
+
+boolean isPeopleDetected() {
+  unsigned long currentTime = millis();
+  int sensorValue = digitalRead(PIR_MOTION_SENSOR);
+  if (sensorValue == HIGH) {
+    m_lastPeopleActivity = currentTime;
+    if (!m_powerOn) {
+      m_powerOn = true;
+      setDefaultState();
+    }
+  }
+  
+  if (m_lastPeopleActivity + 60000 < currentTime && m_powerOn) {
+    m_powerOn = false;
+    SetStatusRGB(0,0,0);
+    lcd.clear();
+    lcd.setRGB(0, 0, 0);
+    fuel_bar.setLevel(0);
+    aux_bar.setLevel(0);
+    unsigned int LED_OFF[24];
+    for (int i =0;i<24;i++)
+    {
+      LED_OFF[i]=0;
+    }
+    circularLED.CircularLEDWrite(LED_OFF);
   }
 }
