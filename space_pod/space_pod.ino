@@ -2,21 +2,23 @@
 #include <Grove_LED_Bar.h>
 #include <ChainableLED.h>
 #include <Wire.h>
-#include "rgb_lcd.h"
+#include <rgb_lcd.h>
 #include <ArduinoJson.h>
 #include <AnimatedCircularLED.h>
 #include <math.h>
 
 #define DEBUG
 
-#define HULL_DAMAGE (0x1)
-#define CABIN_PRESSURE (0x2)
-#define OXYGEN_LOW (0x4)
-#define FUEL_LOW (0x8)
-#define ENGINE_MALFUNCTION (0x16)
-#define FUSE (0x32)
-#define COLLISION (0x64)
-#define FUEL_LINE (0x128)
+enum {
+  HULL_DAMAGE = 1,
+  CABIN_PRESSURE = 2,
+  OXYGEN_LOW = 4,
+  FUEL_LOW = 8,
+  ENGINE_MALFUNCTION = 16,
+  BATTERY_HEALTH = 32,
+  COLLISION = 64,
+  FUEL_LINE = 128,
+};
 
 // Devices
 #define NUM_STATUS_LEDS  2
@@ -24,8 +26,10 @@ ChainableLED status_leds(6, 7, NUM_STATUS_LEDS);
 rgb_lcd lcd;
 Grove_LED_Bar fuel_bar(3, 2, 0); // Clock pin, Data pin, Orientation
 Grove_LED_Bar aux_bar(4, 3, 0);
+//Grove_LED_Bar water_bar(5, 4, 0);
 CircularLED circularLED(8, 7);
 AnimatedCircularLED animatedCircularLED(&circularLED);
+
 const byte PIR_MOTION_SENSOR = 5;
 const byte BUTTON = 8;
 const int ENGINE_POWER_INPUT = A0;
@@ -34,11 +38,12 @@ const int ENGINE_POWER_INPUT = A0;
 const float FLASH_DURATION = 1000;
 
 // Resources
-float m_auxLevel = 1.0f;
-float m_fuel = 1.0f;
-unsigned short m_chargeRate = 100;
-unsigned short m_drainRate = 100;
-byte m_oxygen = 0;
+float m_fuel = 0.0f;
+float m_auxLevel = 0.0f;
+float m_waterLevel = 0.0f;
+float m_oxygenLevel = 0.0f;
+unsigned short m_chargeRate = 0;
+unsigned short m_drainRate = 0;
 byte m_cabinPressure = 0;
  
 bool m_powerOn = true;
@@ -52,13 +57,14 @@ unsigned long m_flashWarnTime;
 unsigned long m_lastWarnTime;
 bool m_isFlashWarnOn;
 byte m_warningField;
+byte m_currentWarningFlags;
 bool m_warningOn = false;
 
 enum LCDState {
   LCD_INIT = -1,
   LCD_ENGINE_FUEL,
   LCD_CHARGE_AUX,
-  LCD_PRESSURE_OXYGEN,
+  LCD_WATER_OXYGEN,
   LCD_NUM_STATES
 };
 
@@ -82,6 +88,7 @@ void setup() {
   
   fuel_bar.begin();
   aux_bar.begin();
+  //water_bar.begin();
   
   // set up the LCD's number of columns and rows:
   lcd.begin(16, 2);
@@ -133,6 +140,8 @@ void readSerial() {
           if (jsonInput.containsKey("wf")) { m_warningField = jsonInput["wf"]; }
           if (jsonInput.containsKey("fl")) { m_fuel = jsonInput["fl"]; }
           if (jsonInput.containsKey("al")) { m_auxLevel = jsonInput["al"]; }
+          if (jsonInput.containsKey("wl")) { m_waterLevel = jsonInput["wl"]; }
+          if (jsonInput.containsKey("ol")) { m_oxygenLevel = jsonInput["ol"]; }
           if (jsonInput.containsKey("cr")) { m_chargeRate = jsonInput["cr"]; }
           if (jsonInput.containsKey("dr")) { m_drainRate = jsonInput["dr"]; }
         }
@@ -150,8 +159,7 @@ void readInput() {
 
   // Read Button
   bool buttonDown = digitalRead(BUTTON);
-  if (buttonDown && !m_buttonOn)
-  {
+  if (buttonDown && !m_buttonOn) {
     m_buttonOn = true;
     toggleLCDState();
   } else if (!buttonDown) {
@@ -171,10 +179,6 @@ void displayStatus() {
         stringTwo += (int)(m_fuel * 100);
         stringOne += "% ";
         stringTwo += "% ";
-        lcd.setCursor(0, 0);
-        lcd.print(stringOne);
-        lcd.setCursor(0, 1);
-        lcd.print(stringTwo);
         break;
       case LCD_CHARGE_AUX:
         stringOne = String("CHARGE: ");
@@ -183,18 +187,25 @@ void displayStatus() {
         stringTwo += m_drainRate;
         stringOne += "W  ";
         stringTwo += "W  ";
-        lcd.setCursor(0, 0);
-        lcd.print(stringOne);
-        lcd.setCursor(0, 1);
-        lcd.print(stringTwo);
         break;
-      case LCD_PRESSURE_OXYGEN:
+      case LCD_WATER_OXYGEN:
+        stringOne = String("WATER: ");
+        stringTwo = String("OXYGEN: ");
+        stringOne += (int)(m_waterLevel * 100);
+        stringTwo += (int)(m_oxygenLevel * 100);
+        stringOne += "%  ";
+        stringTwo += "%  ";
         break;
     }
+    lcd.setCursor(0, 0);
+    lcd.print(stringOne);
+    lcd.setCursor(0, 1);
+    lcd.print(stringTwo);
   }
   
   setBarLevel(&fuel_bar, m_fuel);
   setBarLevel(&aux_bar, m_auxLevel);
+  //setBarLevel(&water_bar, m_waterLevel);
   
   // Engine Power
   animatedCircularLED.setPercentage(m_enginePower);
@@ -210,7 +221,7 @@ void setBarLevel(Grove_LED_Bar* bar, float percent)
 void displayWarning() {
   // Check fuel, buzz if engine power up and fuel low
   if (m_warningField > 0) {
-    if (!m_warningOn) {
+    if (!m_warningOn || m_warningField != m_currentWarningFlags) {
       lcd.clear();
       lcd.setRGB(255, 0, 0);
       String stringOne = "WARNING!";
@@ -218,6 +229,7 @@ void displayWarning() {
       lcd.print(stringOne);
       lcd.setCursor(0, 1);
       lcd.print(getWarningString(m_warningField));
+      m_currentWarningFlags = m_warningField;
     }
 
     // Flash warning LEDs
@@ -247,6 +259,7 @@ void displayWarning() {
 
 String getWarningString(byte bitField) {
   String warningString = "";
+  checkAndAppend(bitField, BATTERY_HEALTH, "Battery", &warningString);
   checkAndAppend(bitField, FUEL_LOW, "Fuel Low", &warningString);
   checkAndAppend(bitField, FUEL_LINE, "Fuel Line", &warningString);
   return warningString;
@@ -260,19 +273,21 @@ void checkAndAppend(byte bitField, byte flag, String warning, String* message) {
 }
 
 void toggleLCDState () {
-  m_currentLCDState++;
-  if (m_currentLCDState >= LCD_NUM_STATES) m_currentLCDState = LCD_ENGINE_FUEL;
-  s_lcdState = (LCDState)m_currentLCDState;
-  lcd.clear();
-  switch(s_lcdState) {
-    case LCD_ENGINE_FUEL:
-    case LCD_CHARGE_AUX:
-    case LCD_PRESSURE_OXYGEN:
-      break;
-   default:
-      lcd.setCursor(0, 0);
-      lcd.print("WELCOME ABOARD");
-      break;
+  if (!m_warningOn) {
+    m_currentLCDState++;
+    if (m_currentLCDState >= LCD_NUM_STATES) m_currentLCDState = LCD_ENGINE_FUEL;
+    s_lcdState = (LCDState)m_currentLCDState;
+    lcd.clear();
+    switch(s_lcdState) {
+      case LCD_ENGINE_FUEL:
+      case LCD_CHARGE_AUX:
+      case LCD_WATER_OXYGEN:
+        break;
+     default:
+        lcd.setCursor(0, 0);
+        lcd.print("WELCOME ABOARD");
+        break;
+    }
   }
 }
 
@@ -296,7 +311,8 @@ void SetStatusRGB(int r, int g, int b) {
 boolean isPeopleDetected() {
   unsigned long currentTime = millis();
   int sensorValue = digitalRead(PIR_MOTION_SENSOR);
-  if (sensorValue == HIGH) {
+  bool buttonDown = digitalRead(BUTTON);
+  if (sensorValue == HIGH || buttonDown) {
     m_lastPeopleActivity = currentTime;
     if (!m_powerOn) {
       m_powerOn = true;
@@ -304,18 +320,20 @@ boolean isPeopleDetected() {
     }
   }
   
-  if (m_lastPeopleActivity + 60000 < currentTime && m_powerOn) {
+  if (m_lastPeopleActivity + 60000 * 5 < currentTime && m_powerOn) {
     m_powerOn = false;
     SetStatusRGB(0,0,0);
     lcd.clear();
     lcd.setRGB(0, 0, 0);
     fuel_bar.setLevel(0);
     aux_bar.setLevel(0);
+    //water_bar.setLevel(0);
     unsigned int LED_OFF[24];
     for (int i =0;i<24;i++)
     {
       LED_OFF[i]=0;
     }
     circularLED.CircularLEDWrite(LED_OFF);
+    m_currentWarningFlags = 0;
   }
 }
