@@ -294,10 +294,19 @@ void toggleLCDState () {
 void updateServer() {
   unsigned long currentTime = millis();
   if(currentTime > m_lastSerialPrint + 100) {
+    /*
     StaticJsonBuffer<200> jsonBuffer;
     JsonObject& root = jsonBuffer.createObject();
     root["epi"] = m_enginePowerInput;
     root.printTo(Serial);
+    */
+    String jsonString = "{\"epi\":\"";
+    jsonString += m_enginePowerInput;
+    jsonString +="\"}";
+
+    // print it:
+    Serial.println(jsonString);
+    
     m_lastSerialPrint = millis();
   }
 }
