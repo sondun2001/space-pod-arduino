@@ -1,11 +1,11 @@
 #include <CircularLED.h>
 #include <Grove_LED_Bar.h>
 #include <ChainableLED.h>
-#include <Wire.h>
 #include <rgb_lcd.h>
 #include <ArduinoJson.h>
 #include <AnimatedCircularLED.h>
 #include <math.h>
+#include <Encoder.h>
 
 #define DEBUG
 
@@ -22,16 +22,17 @@ enum {
 
 // Devices
 #define NUM_STATUS_LEDS  2
-ChainableLED status_leds(6, 7, NUM_STATUS_LEDS);
+ChainableLED status_leds(7, 8, NUM_STATUS_LEDS);
 rgb_lcd lcd;
-Grove_LED_Bar fuel_bar(3, 2, 0); // Clock pin, Data pin, Orientation
-Grove_LED_Bar aux_bar(4, 3, 0);
+Grove_LED_Bar fuel_bar(5, 4, 0); // Clock pin, Data pin, Orientation
+Grove_LED_Bar aux_bar(9, 8, 0);
 //Grove_LED_Bar water_bar(5, 4, 0);
-CircularLED circularLED(8, 7);
+
+CircularLED circularLED(6, 5);
 AnimatedCircularLED animatedCircularLED(&circularLED);
 
-const byte PIR_MOTION_SENSOR = 5;
-const byte BUTTON = 8;
+const byte PIR_MOTION_SENSOR = 8;
+const byte BUTTON = 3;
 const int ENGINE_POWER_INPUT = A0;
 
 // CONSTANTS
@@ -77,14 +78,18 @@ String m_inputString = "";
 
 unsigned long m_lastPeopleActivity;
 
+Encoder m_dialEncoder(2, 3);
+long m_oldEncoderPosition  = -999;
+bool m_enginePowerDirty = false;
+
 void setup() {
   // Configure the serial communication line at 9600 baud (bits per second.)
   Serial.begin(9600);
   
   // Configure the angle sensor's pin for input.
   pinMode(PIR_MOTION_SENSOR, INPUT);
-  pinMode(ENGINE_POWER_INPUT, INPUT);
-  pinMode(BUTTON, INPUT);
+  // pinMode(ENGINE_POWER_INPUT, INPUT);
+  // pinMode(BUTTON, INPUT);
   
   fuel_bar.begin();
   aux_bar.begin();
@@ -153,11 +158,26 @@ void readSerial() {
 
 void readInput() {
   // Read engine power level
+  /*
   int value = analogRead(ENGINE_POWER_INPUT);
   m_enginePowerInput = (float) value / 1023;
-  if (m_enginePowerInput >= 0.995f) m_enginePowerInput = 1;
-
-  // Read Button
+  */
+  
+  long newPosition = m_dialEncoder.read();
+  if (newPosition != m_oldEncoderPosition) {
+    if (newPosition > m_oldEncoderPosition) {
+      m_enginePowerInput += 0.01;
+      if (m_enginePowerInput >= 1) m_enginePowerInput = 1;
+    } else {
+      m_enginePowerInput -= 0.01;
+      if (m_enginePowerInput < 0) m_enginePowerInput = 0;
+    }
+    m_enginePowerDirty = true;
+    m_oldEncoderPosition = newPosition;
+    // Serial.println(m_enginePowerInput);
+  }
+  
+  /*
   bool buttonDown = digitalRead(BUTTON);
   if (buttonDown && !m_buttonOn) {
     m_buttonOn = true;
@@ -165,6 +185,7 @@ void readInput() {
   } else if (!buttonDown) {
     m_buttonOn = false;
   }
+  */
 }
 
 void displayStatus() {
@@ -300,12 +321,17 @@ void updateServer() {
     root["epi"] = m_enginePowerInput;
     root.printTo(Serial);
     */
-    String jsonString = "{\"epi\":\"";
-    jsonString += m_enginePowerInput;
-    jsonString +="\"}";
 
-    // print it:
-    Serial.println(jsonString);
+    if (m_enginePowerDirty) {
+      String jsonString = "{\"epi\":\"";
+      jsonString += m_enginePowerInput;
+      jsonString +="\"}";
+      
+      // print it:
+      Serial.println(jsonString);
+      
+      m_enginePowerDirty = false;
+    }
     
     m_lastSerialPrint = millis();
   }
@@ -320,7 +346,8 @@ void SetStatusRGB(int r, int g, int b) {
 boolean isPeopleDetected() {
   unsigned long currentTime = millis();
   int sensorValue = digitalRead(PIR_MOTION_SENSOR);
-  bool buttonDown = digitalRead(BUTTON);
+  // bool buttonDown = digitalRead(BUTTON);
+  bool buttonDown = false;
   if (sensorValue == HIGH || buttonDown) {
     m_lastPeopleActivity = currentTime;
     if (!m_powerOn) {
