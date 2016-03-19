@@ -109,15 +109,14 @@ void setDefaultState() {
 }
 
 void loop() {
+
+  readSerial();
   isPeopleDetected();
   
   if (m_powerOn) {
     readInput();
-    readSerial();
-    
     displayWarning();
     displayStatus();
-    
     updateServer();
   }
 }
@@ -129,7 +128,8 @@ void readSerial() {
      
     if (inChar == '\0') {
       //Serial.println(m_inputString);
-      if (m_inputString.startsWith("reset")) {
+      m_lastPeopleActivity = millis();
+      if (m_inputString.startsWith("toggleLCD")) {
          toggleLCDState();
       } else {
         StaticJsonBuffer<200> jsonReadBuffer;
