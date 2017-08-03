@@ -21,7 +21,7 @@ enum {
 };
 
 // Devices
-#define NUM_STATUS_LEDS  2
+#define NUM_STATUS_LEDS  3
 ChainableLED status_leds(7, 8, NUM_STATUS_LEDS);
 rgb_lcd lcd;
 Grove_LED_Bar fuel_bar(5, 4, 0); // Clock pin, Data pin, Orientation
@@ -46,7 +46,7 @@ float m_oxygenLevel = 0.0f;
 unsigned short m_chargeRate = 0;
 unsigned short m_drainRate = 0;
 byte m_cabinPressure = 0;
- 
+
 bool m_powerOn = true;
 bool m_isFueling = false;
 bool m_isRepairing = false;
@@ -78,41 +78,42 @@ String m_inputString = "";
 
 unsigned long m_lastPeopleActivity;
 
-Encoder m_dialEncoder(2, 3);
-long m_oldEncoderPosition  = -999;
+//Encoder m_dialEncoder(2, 3);
+//long m_oldEncoderPosition  = -999;
 bool m_enginePowerDirty = false;
 
 void setup() {
   // Configure the serial communication line at 9600 baud (bits per second.)
   Serial.begin(9600);
-  
+
   // Configure the angle sensor's pin for input.
-  pinMode(PIR_MOTION_SENSOR, INPUT);
+  //pinMode(PIR_MOTION_SENSOR, INPUT);
   // pinMode(ENGINE_POWER_INPUT, INPUT);
   // pinMode(BUTTON, INPUT);
-  
+
   fuel_bar.begin();
   aux_bar.begin();
   //water_bar.begin();
-  
+
   // set up the LCD's number of columns and rows:
   lcd.begin(16, 2);
-  animatedCircularLED.setAnimationStepTime(100);
-  
+  animatedCircularLED.setAnimationStepTime(50);
+  encoder.Timer_init();
+
   toggleLCDState();
   setDefaultState();
 }
 
 void setDefaultState() {
   lcd.setRGB(0, 0, 255);
-  SetStatusRGB(0, 255, 0);
+  SetStatusRGB(0, 180, 0);
 }
 
 void loop() {
 
   readSerial();
   isPeopleDetected();
-  
+
   if (m_powerOn) {
     readInput();
     displayWarning();
@@ -125,30 +126,46 @@ void readSerial() {
   while (Serial.available() > 0) {
     int inChar = Serial.read();
     m_inputString += (char)inChar;
-     
+
     if (inChar == '\0') {
       //Serial.println(m_inputString);
       m_lastPeopleActivity = millis();
       if (m_inputString.startsWith("toggleLCD")) {
-         toggleLCDState();
+        toggleLCDState();
       } else {
         StaticJsonBuffer<200> jsonReadBuffer;
         JsonObject& jsonInput = jsonReadBuffer.parseObject(m_inputString);
-        if (jsonInput.success()){
+        if (jsonInput.success()) {
           /*
-          const char* sensor    = root["sensor"];
-          long        time      = root["time"];
-          double      latitude  = root["data"][0];
-          double      longitude = root["data"][1];
+            const char* sensor    = root["sensor"];
+            long        time      = root["time"];
+            double      latitude  = root["data"][0];
+            double      longitude = root["data"][1];
           */
-          if (jsonInput.containsKey("ep")) { m_enginePower = jsonInput["ep"]; }
-          if (jsonInput.containsKey("wf")) { m_warningField = jsonInput["wf"]; }
-          if (jsonInput.containsKey("fl")) { m_fuel = jsonInput["fl"]; }
-          if (jsonInput.containsKey("al")) { m_auxLevel = jsonInput["al"]; }
-          if (jsonInput.containsKey("wl")) { m_waterLevel = jsonInput["wl"]; }
-          if (jsonInput.containsKey("ol")) { m_oxygenLevel = jsonInput["ol"]; }
-          if (jsonInput.containsKey("cr")) { m_chargeRate = jsonInput["cr"]; }
-          if (jsonInput.containsKey("dr")) { m_drainRate = jsonInput["dr"]; }
+          if (jsonInput.containsKey("ep")) {
+            m_enginePower = jsonInput["ep"];
+          }
+          if (jsonInput.containsKey("wf")) {
+            m_warningField = jsonInput["wf"];
+          }
+          if (jsonInput.containsKey("fl")) {
+            m_fuel = jsonInput["fl"];
+          }
+          if (jsonInput.containsKey("al")) {
+            m_auxLevel = jsonInput["al"];
+          }
+          if (jsonInput.containsKey("wl")) {
+            m_waterLevel = jsonInput["wl"];
+          }
+          if (jsonInput.containsKey("ol")) {
+            m_oxygenLevel = jsonInput["ol"];
+          }
+          if (jsonInput.containsKey("cr")) {
+            m_chargeRate = jsonInput["cr"];
+          }
+          if (jsonInput.containsKey("dr")) {
+            m_drainRate = jsonInput["dr"];
+          }
         }
       }
       m_inputString = "";
@@ -159,32 +176,34 @@ void readSerial() {
 void readInput() {
   // Read engine power level
   /*
-  int value = analogRead(ENGINE_POWER_INPUT);
-  m_enginePowerInput = (float) value / 1023;
+    int value = analogRead(ENGINE_POWER_INPUT);
+    m_enginePowerInput = (float) value / 1023;
   */
-  
-  long newPosition = m_dialEncoder.read();
-  if (newPosition != m_oldEncoderPosition) {
-    if (newPosition > m_oldEncoderPosition) {
-      m_enginePowerInput += 0.01;
+
+  if (encoder.rotate_flag == 1)
+  {
+    if (encoder.direct == 1)
+    {
+      m_enginePowerInput += 0.02;
       if (m_enginePowerInput >= 1) m_enginePowerInput = 1;
-    } else {
-      m_enginePowerInput -= 0.01;
+    }
+    else
+    {
+      m_enginePowerInput -= 0.02;
       if (m_enginePowerInput < 0) m_enginePowerInput = 0;
     }
+    encoder.rotate_flag = 0;
     m_enginePowerDirty = true;
-    m_oldEncoderPosition = newPosition;
-    // Serial.println(m_enginePowerInput);
   }
-  
+
   /*
-  bool buttonDown = digitalRead(BUTTON);
-  if (buttonDown && !m_buttonOn) {
+    bool buttonDown = digitalRead(BUTTON);
+    if (buttonDown && !m_buttonOn) {
     m_buttonOn = true;
     toggleLCDState();
-  } else if (!buttonDown) {
+    } else if (!buttonDown) {
     m_buttonOn = false;
-  }
+    }
   */
 }
 
@@ -192,7 +211,7 @@ void displayStatus() {
   if (!m_warningOn) {
     String stringOne;
     String stringTwo;
-    switch(s_lcdState) {
+    switch (s_lcdState) {
       case LCD_ENGINE_FUEL:
         stringOne = String("ENGINE: ");
         stringTwo = String("FUEL: ");
@@ -223,11 +242,11 @@ void displayStatus() {
     lcd.setCursor(0, 1);
     lcd.print(stringTwo);
   }
-  
+
   setBarLevel(&fuel_bar, m_fuel);
   setBarLevel(&aux_bar, m_auxLevel);
   //setBarLevel(&water_bar, m_waterLevel);
-  
+
   // Engine Power
   animatedCircularLED.setPercentage(m_enginePower);
 }
@@ -235,7 +254,9 @@ void displayStatus() {
 void setBarLevel(Grove_LED_Bar* bar, float percent)
 {
   int barLevel = round(10 * percent);
-  if (barLevel < 1) { barLevel = 1; }
+  if (barLevel < 1) {
+    barLevel = 1;
+  }
   bar->setLevel(barLevel);
 }
 
@@ -259,17 +280,50 @@ void displayWarning() {
     m_flashWarnTime += delta;
     if (m_isFlashWarnOn && m_flashWarnTime < FLASH_DURATION) {
       // Process something while flash warn on
-    } else if (!m_isFlashWarnOn && m_flashWarnTime < FLASH_DURATION){
+    } else if (!m_isFlashWarnOn && m_flashWarnTime < FLASH_DURATION) {
       // Process something while flash warn off
     } else {
       m_isFlashWarnOn = !m_isFlashWarnOn;
       m_flashWarnTime = 0;
+
+      /*
       if (m_isFlashWarnOn) {
-        SetStatusRGB(255,0,0);
+        SetStatusRGB(180, 0, 0);
       } else {
-        SetStatusRGB(0,0,0);
+        SetStatusRGB(0, 0, 0);
+      }
+      */
+      if (m_currentWarningFlags & BATTERY_HEALTH) {
+        if (m_isFlashWarnOn) {
+          status_leds.setColorRGB(0, 180, 0, 0);
+        } else {
+          status_leds.setColorRGB(0, 0, 0, 0);
+        }
+      } else {
+        status_leds.setColorRGB(0, 0, 180, 0);
+      }
+      
+      if (m_currentWarningFlags & FUEL_LOW) {
+        if (m_isFlashWarnOn) {
+          status_leds.setColorRGB(1, 180, 0, 0);
+        } else {
+          status_leds.setColorRGB(1, 0, 0, 0);
+        }
+      } else {
+        status_leds.setColorRGB(1, 0, 180, 0);
+      }
+      
+      if (m_currentWarningFlags & (OXYGEN_LOW | FUEL_LINE)) {
+        if (m_isFlashWarnOn) {
+          status_leds.setColorRGB(2, 180, 0, 0);
+        } else {
+          status_leds.setColorRGB(2, 0, 0, 0);
+        }
+      } else {
+        status_leds.setColorRGB(2, 0, 180, 0);
       }
     }
+    
     m_lastWarnTime = currentTime;
     m_warningOn = true;
   } else if (m_warningOn) {
@@ -283,8 +337,10 @@ String getWarningString(byte bitField) {
   checkAndAppend(bitField, BATTERY_HEALTH, "Battery", &warningString);
   checkAndAppend(bitField, FUEL_LOW, "Fuel Low", &warningString);
   checkAndAppend(bitField, FUEL_LINE, "Fuel Line", &warningString);
+  checkAndAppend(bitField, OXYGEN_LOW, "Oxygen", &warningString);
   return warningString;
 }
+
 
 void checkAndAppend(byte bitField, byte flag, String warning, String* message) {
   if (bitField & flag) {
@@ -299,12 +355,12 @@ void toggleLCDState () {
     if (m_currentLCDState >= LCD_NUM_STATES) m_currentLCDState = LCD_ENGINE_FUEL;
     s_lcdState = (LCDState)m_currentLCDState;
     lcd.clear();
-    switch(s_lcdState) {
+    switch (s_lcdState) {
       case LCD_ENGINE_FUEL:
       case LCD_CHARGE_AUX:
       case LCD_WATER_OXYGEN:
         break;
-     default:
+      default:
         lcd.setCursor(0, 0);
         lcd.print("WELCOME ABOARD");
         break;
@@ -314,62 +370,57 @@ void toggleLCDState () {
 
 void updateServer() {
   unsigned long currentTime = millis();
-  if(currentTime > m_lastSerialPrint + 100) {
+  if (currentTime > m_lastSerialPrint + 100) {
     /*
-    StaticJsonBuffer<200> jsonBuffer;
-    JsonObject& root = jsonBuffer.createObject();
-    root["epi"] = m_enginePowerInput;
-    root.printTo(Serial);
+      StaticJsonBuffer<200> jsonBuffer;
+      JsonObject& root = jsonBuffer.createObject();
+      root["epi"] = m_enginePowerInput;
+      root.printTo(Serial);
     */
 
     if (m_enginePowerDirty) {
       String jsonString = "{\"epi\":\"";
       jsonString += m_enginePowerInput;
-      jsonString +="\"}";
-      
+      jsonString += "\"}";
+
       // print it:
       Serial.println(jsonString);
-      
+
       m_enginePowerDirty = false;
     }
-    
+
     m_lastSerialPrint = millis();
   }
 }
 
 void SetStatusRGB(int r, int g, int b) {
-  for(int i=0; i < NUM_STATUS_LEDS; i++) {
+  for (int i = 0; i < NUM_STATUS_LEDS; i++) {
     status_leds.setColorRGB(i, r, g, b);
   }
 }
 
 boolean isPeopleDetected() {
   unsigned long currentTime = millis();
-  int sensorValue = digitalRead(PIR_MOTION_SENSOR);
+  // int sensorValue = digitalRead(PIR_MOTION_SENSOR);
   // bool buttonDown = digitalRead(BUTTON);
   bool buttonDown = false;
-  if (sensorValue == HIGH || buttonDown) {
+  if (/*sensorValue == HIGH || */buttonDown) {
     m_lastPeopleActivity = currentTime;
     if (!m_powerOn) {
       m_powerOn = true;
       setDefaultState();
     }
   }
-  
+
   if (m_lastPeopleActivity + 60000 * 5 < currentTime && m_powerOn) {
     m_powerOn = false;
-    SetStatusRGB(0,0,0);
+    SetStatusRGB(0, 0, 0);
     lcd.clear();
     lcd.setRGB(0, 0, 0);
     fuel_bar.setLevel(0);
     aux_bar.setLevel(0);
     //water_bar.setLevel(0);
-    unsigned int LED_OFF[24];
-    for (int i =0;i<24;i++)
-    {
-      LED_OFF[i]=0;
-    }
-    circularLED.CircularLEDWrite(LED_OFF);
+    animatedCircularLED.setPercentage(0);
     m_currentWarningFlags = 0;
   }
 }
